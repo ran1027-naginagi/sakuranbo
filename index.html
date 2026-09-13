@@ -386,6 +386,9 @@ details.set summary::-webkit-details-marker{display:none}
 .wrow input.wn{flex:1;min-width:0;text-align:left;font-family:inherit;font-weight:700;font-size:13px}
 .wrow input.wb{width:82px}
 .wrow .del{color:var(--ink-3);font-size:17px;line-height:1;padding:4px 5px;flex:none}
+.wrow .cm{flex:1;font-size:13px;font-weight:700;color:var(--ink-2)}
+.wrow .cm.now{color:var(--red)}
+.wrow input.cb{width:96px}
 .addw{padding:9px;border-radius:5px;background:var(--surface-2);color:var(--ink-2);font-size:12px;font-weight:700}
 .field{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .field label{font-size:13px;color:var(--ink-2);font-weight:500}
@@ -592,7 +595,10 @@ details.set summary::-webkit-details-marker{display:none}
       <div class="sublbl">サイフと 残高（給料が入ったら「入った」で足してね）</div>
       <div id="walEdit" style="display:flex;flex-direction:column;gap:7px"></div>
       <button class="addw" id="addWal">＋ サイフをふやす</button>
-      <div class="field"><label for="cap">1か月につかう上限</label><input id="cap" type="text" inputmode="numeric"></div>
+      <div class="field"><label for="cap" id="capL">1か月につかう上限</label><input id="cap" type="text" inputmode="numeric"></div>
+      <div class="sublbl">上限を だんだん へらす（最後の月の上限が そのあともつづくよ）</div>
+      <div id="capPlan" style="display:flex;flex-direction:column;gap:7px"></div>
+      <button class="addw" id="addCapM">＋ 次の月をたす</button>
       <div class="field"><label for="cdays">寝かせる日数</label><input id="cdays" type="text" inputmode="numeric"></div>
       <div class="setrow">
         <button id="backup">バックアップ</button>
@@ -630,7 +636,7 @@ details.set summary::-webkit-details-marker{display:none}
   var DAY=86400000, NCHERRY=12;
   var STAR='<svg class="star"><use href="#sp"/></svg>';
 
-  var state = { v:6, updatedAt:0, cooldownDays:3, monthCap:15000, theme:"auto", wallets:[], entries:[], wants:[], plans:[] };
+  var state = { v:6, updatedAt:0, cooldownDays:3, monthCap:15000, theme:"auto", wallets:[], entries:[], wants:[], plans:[], capPlan:[], capPlanSeeded:false };
   var cloud=null, cloudOK=false, saveTimer=null;
   var pickedCat = CATS[0].name;
   var mode = "out";
@@ -672,6 +678,28 @@ details.set summary::-webkit-details-marker{display:none}
   function todayYMD(){ return ymd(new Date()); }
   function viewKey(){ return viewY+"-"+(viewM+1); }
   function isThisMonth(){ return viewKey() === thisMonth(); }
+  /* monthly cap that steps down over time; the last step carries on */
+  function capFor(y,m){
+    var k=y*12+m, best=null;
+    (state.capPlan||[]).forEach(function(p){
+      var pk=p.y*12+p.m;
+      if(pk<=k && (!best || pk>best.y*12+best.m)) best=p;
+    });
+    return best ? best.cap : (state.monthCap||0);
+  }
+  function setCap(y,m,n){
+    var p=state.capPlan.filter(function(x){ return x.y===y && x.m===m; })[0];
+    if(p) p.cap=n; else state.capPlan.push({ y:y, m:m, cap:n });
+    state.capPlan.sort(function(a,b){ return (a.y*12+a.m)-(b.y*12+b.m); });
+  }
+  function seedCapPlan(){
+    if(state.capPlanSeeded) return;
+    state.capPlan = [
+      {y:2026,m:8,cap:40000},{y:2026,m:9,cap:35000},{y:2026,m:10,cap:30000},
+      {y:2026,m:11,cap:25000},{y:2027,m:0,cap:20000},{y:2027,m:1,cap:15000}
+    ];
+    state.capPlanSeeded = true;
+  }
   function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 
   /* an Enter that only fires once the IME has committed the text */
@@ -773,6 +801,8 @@ details.set summary::-webkit-details-marker{display:none}
     if(Array.isArray(d.entries)) state.entries = d.entries;
     if(Array.isArray(d.wants)) state.wants = d.wants;
     if(Array.isArray(d.plans)) state.plans = d.plans;
+    if(Array.isArray(d.capPlan)) state.capPlan = d.capPlan;
+    if(d.capPlanSeeded) state.capPlanSeeded = true;
     if(Array.isArray(d.wallets) && d.wallets.length) state.wallets = d.wallets;
     state.updatedAt = d.updatedAt || 0;
     migrate();
@@ -951,13 +981,14 @@ details.set summary::-webkit-details-marker{display:none}
 
   /* ---------- render ---------- */
   function render(){
+    seedCapPlan();
     var now=new Date();
     document.getElementById("monthLabel").textContent =
       (now.getMonth()+1)+"/"+now.getDate()+"("+WD[now.getDay()]+") "
       + now.getHours()+":"+pad2(now.getMinutes());
 
     var cur = isThisMonth();
-    var cap=state.monthCap||0, used=monthSpentCapped(), fromSave=monthSpentSaved();
+    var cap=capFor(viewY,viewM), used=monthSpentCapped(), fromSave=monthSpentSaved();
     var left=cap-used, usable=sumBal(spendWallets()), saved=sumBal(saveWallets());
     var dim=daysInMonth(now), day=now.getDate();
 
@@ -1028,6 +1059,8 @@ details.set summary::-webkit-details-marker{display:none}
     document.getElementById("totSave").textContent = yen(saved);
     document.getElementById("totAll").textContent = yen(usable+saved);
     document.getElementById("cap").value = cap;
+    document.getElementById("capL").textContent = (viewM+1)+"月につかう上限";
+    renderCapPlan();
     document.getElementById("cdays").value = state.cooldownDays;
     document.getElementById("cdNote").textContent = state.cooldownDays+"日 寝かせてから決める";
     document.getElementById("brkTtl").textContent = cur ? "今月のうちわけ" : (viewM+1)+"月のうちわけ";
@@ -1287,6 +1320,17 @@ details.set summary::-webkit-details-marker{display:none}
         + '<input class="wn" type="text" value="'+esc(w.name)+'" aria-label="サイフの名前">'
         + '<input class="wb" type="text" inputmode="numeric" value="'+(w.balance||0)+'" aria-label="残高">'
         + '<button class="del" aria-label="このサイフを消す">×</button></div>';
+    }).join("");
+  }
+
+  function renderCapPlan(){
+    var t=new Date(), nowK=t.getFullYear()*12+t.getMonth();
+    document.getElementById("capPlan").innerHTML = state.capPlan.map(function(p,i){
+      var now = p.y*12+p.m===nowK;
+      return '<div class="wrow" data-i="'+i+'">'
+        + '<span class="cm'+(now?" now":"")+'">'+p.y+"年 "+(p.m+1)+"月"+(now?"（今月）":"")+'</span>'
+        + '<input class="cb" type="text" inputmode="numeric" value="'+p.cap+'" aria-label="'+(p.m+1)+'月の上限">'
+        + '<button class="del" aria-label="この月を消す">×</button></div>';
     }).join("");
   }
 
@@ -1588,7 +1632,24 @@ details.set summary::-webkit-details-marker{display:none}
 
   document.getElementById("cap").addEventListener("change", function(){
     var n=parseNum(this.value);
-    if(n>0){ state.monthCap=n; save(); toast("上限を "+yen(n)+" に"); } else this.value=state.monthCap;
+    if(n>0){ setCap(viewY,viewM,n); save(); toast((viewM+1)+"月の上限を "+yen(n)+" に"); } else this.value=capFor(viewY,viewM);
+  });
+  document.getElementById("capPlan").addEventListener("change", function(ev){
+    var row=ev.target.closest(".wrow"); if(!row) return;
+    var p=state.capPlan[+row.dataset.i]; if(!p) return;
+    var n=parseNum(ev.target.value);
+    if(n>0){ p.cap=n; save(); toast((p.m+1)+"月の上限を "+yen(n)+" に"); } else ev.target.value=p.cap;
+  });
+  document.getElementById("capPlan").addEventListener("click", function(ev){
+    var b=ev.target.closest(".del"); if(!b) return;
+    var i=+b.closest(".wrow").dataset.i, p=state.capPlan[i]; if(!p) return;
+    state.capPlan.splice(i,1); save(); toast((p.m+1)+"月の上限を けした");
+  });
+  document.getElementById("addCapM").addEventListener("click", function(){
+    var last=state.capPlan[state.capPlan.length-1], t=new Date();
+    var y=last?last.y:t.getFullYear(), m=last?last.m+1:t.getMonth();
+    if(m>11){ m=0; y++; }
+    setCap(y,m,last?last.cap:(state.monthCap||15000)); save();
   });
   document.getElementById("cdays").addEventListener("change", function(){
     var n=parseNum(this.value);
